@@ -288,6 +288,8 @@ def on_intent(event):
         return stop()
     elif intent_name == "PlayMoreLikeThisIntent":
         return play_more_like_this(event)
+    elif intent_name == "AlexaPlaylistIntent":
+        return play_alexa_playlist(event)
     else:
         raise ValueError("Invalid intent")
         
@@ -310,8 +312,8 @@ def get_headers(event):
     if 'apiAccessToken' in event['context']['System']:
         apiAccessToken = event['context']['System']['apiAccessToken']
         headers = {
-        'Authorization': 'Bearer '+apiAccessToken,
-        'Content-Type': 'application/json'
+            'Authorization': 'Bearer '+apiAccessToken,
+            'Content-Type': 'application/json'
         }
         return headers
     else:
@@ -427,6 +429,7 @@ def add_to_list(event, title):
 
 def get_welcome_response(event):
     list_created = create_list(event, 'YouTube')
+    list_created2 = create_list(event, 'YouTube Play')
     speech_output = strings['welcome1']
     reprompt_text = strings['welcome2']
     should_end_session = False
@@ -691,9 +694,33 @@ def stop():
     speech_output = strings['pausing']
     return build_response(build_stop_speechlet_response(speech_output, should_end_session))
 
+def nearly_finished_alexa_playlist(event):
+    should_end_session = True
+    current_token = event['request']['token']
+    playlist = convert_token_to_dict(current_token)
+    listId = get_list_id(event, 'YouTube Play')
+    first_item_id, first_item, first_item_version = read_list_item(event, listId)
+    if first_item is None:
+        return do_nothing()
+    videos = video_search(first_item)
+    next_url = None
+    for i, id in enumerate(videos):
+        playlist['v'+str(i)] = id
+        if next_url is None:
+            playlist['p'] = i
+            next_url, title = get_url_and_title(id)
+    if next_url is None:
+        return do_nothing()
+    next_token = convert_dict_to_token(playlist)
+    update_list_item(event, listId, first_item_id, first_item, first_item_version)
+    return build_response(build_audio_enqueue_response(should_end_session, next_url, current_token, next_token))
+
 def nearly_finished(event):
     should_end_session = True
     current_token = event['request']['token']
+    playlist = convert_token_to_dict(current_token)
+    if playlist['i'] == 'AlexaPlaylist':
+        return nearly_finished_alexa_playlist(event)
     skip = 1
     next_url, next_token, title = get_next_url_and_token(current_token, skip)
     if title is None:
@@ -710,6 +737,26 @@ def nearly_finished(event):
     if next_url == False:
         return do_nothing()
     return build_response(build_audio_enqueue_response(should_end_session, next_url, current_token, next_token))
+
+def play_alexa_playlist(event):
+    should_end_session = True
+    listId = get_list_id(event, 'YouTube Play')
+    if listId is None:
+        speech_output = "List permissions have not been granted in the Alexa app."
+        return build_response(build_short_speechlet_response(speech_output, should_end_session))        
+    first_item_id, first_item, first_item_version = read_list_item(event, listId)
+    logger.info(first_item)
+    if first_item is None:
+        speech_output = strings['nomoreitems']
+        return build_response(build_short_speechlet_response(speech_output, should_end_session))  
+    intent = event['request']['intent']
+    if 'slots' not in intent:
+        intent['slots'] = {}
+    if 'query' not in intent['slots']:
+        intent['slots']['query'] = {}
+    intent['slots']['query']['value'] = first_item
+    update_list_item(event, listId, first_item_id, first_item, first_item_version)
+    return search(event)
 
 def play_more_like_this(event):
     should_end_session = True
